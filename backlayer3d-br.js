@@ -3,7 +3,7 @@
 // Description: 3D objects rendered behind every Scratch sprite.
 // By: nofileteams
 // License: MIT
-// Version: 1.3.0
+// Version: 1.3.1
 
 (async function (Scratch) {
   "use strict";
@@ -180,6 +180,26 @@
     const variable = util.target.lookupVariableByNameAndType(name(listName), "list");
     return variable ? variable.value : [];
   };
+  const loadGLTFList = async items => {
+    const numeric = items.length > 0 && items.every(v => Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 255);
+    const data = numeric ? Uint8Array.from(items, Number).buffer : items.join("\n").trim();
+    const gltf = await new Promise((resolve, reject) => new GLTFLoader().parse(data, "", resolve, reject));
+    gltf.scene.userData.animationClips = gltf.animations || [];
+    gltf.scene.userData.animationMixer = new THREE.AnimationMixer(gltf.scene);
+    return gltf.scene;
+  };
+  const playObjectAnimation = (root, animationName) => {
+    if (!root || !root.userData.animationMixer) return null;
+    const clip = root.userData.animationClips.find(item => item.name === name(animationName));
+    if (!clip) return null;
+    const mixer = root.userData.animationMixer;
+    mixer.stopAllAction();
+    const action = mixer.clipAction(clip);
+    action.reset().setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true;
+    action.play();
+    return action;
+  };
   const updateFog = () => scene.fog = fogEnabled ? new THREE.Fog(fogColor, 1, Math.max(1, fogDistance)) : null;
   const box = root => new THREE.Box3().setFromObject(root);
   const touching = (a,b) => a && b && !a.userData.passThrough && !b.userData.passThrough && box(a).intersectsBox(box(b));
@@ -230,7 +250,9 @@
     frame = requestAnimationFrame(renderLoop);
     if (!drawing) return;
     if (contextLost) return;
-    updatePhysics(Math.min(_physicsClock.getDelta(), 0.05));
+    const delta = Math.min(_physicsClock.getDelta(), 0.05);
+    updatePhysics(delta);
+    for (const o of objects.values()) if (o.userData.animationMixer) o.userData.animationMixer.update(delta);
     const size = renderer.getNativeSize();
     if (canvas.width !== size[0] || canvas.height !== size[1]) {
       glRenderer.setSize(size[0], size[1], false);
@@ -259,74 +281,77 @@
       const S = ArgumentType.STRING, N = ArgumentType.NUMBER, C = ArgumentType.COLOR;
       const onoff = {acceptReporters:true, items:["on","off"]};
       return {id:"backlayer3d", name:"BackLayer 3D", color1:"#5B5FEF", color2:"#4549C4", blocks:[
-        {opcode:"reset", blockType:BlockType.COMMAND, text:"Redefinir tudo"},
-        {opcode:"create", blockType:BlockType.COMMAND, text:"Criar objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"textureCostume", blockType:BlockType.COMMAND, text:"Definir textura do objeto [NAME] para [COSTUME]", arguments:{NAME:{type:S,defaultValue:"box"},COSTUME:{type:S,defaultValue:"costume1"}}},
-        {opcode:"textureURL", blockType:BlockType.COMMAND, text:"Carregar textura do objeto [NAME] a partir da URL [URL]", arguments:{NAME:{type:S,defaultValue:"box"},URL:{type:S,defaultValue:"https://example.com/test.png"}}},
-        {opcode:"modelList", blockType:BlockType.COMMAND, text:"Definir modelo do objeto [NAME] com a lista [LIST]", arguments:{NAME:{type:S,defaultValue:"box"},LIST:{type:S,defaultValue:"list1"}}},
-        {opcode:"remove", blockType:BlockType.COMMAND, text:"Remover objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"reset", blockType:BlockType.COMMAND, text:"redefinir tudo"},
+        {opcode:"create", blockType:BlockType.COMMAND, text:"criar objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"textureCostume", blockType:BlockType.COMMAND, text:"definir textura do objeto [NAME] para [COSTUME]", arguments:{NAME:{type:S,defaultValue:"box"},COSTUME:{type:S,defaultValue:"costume1"}}},
+        {opcode:"textureURL", blockType:BlockType.COMMAND, text:"carregar textura do objeto [NAME] a partir da URL [URL]", arguments:{NAME:{type:S,defaultValue:"box"},URL:{type:S,defaultValue:"https://example.com/test.png"}}},
+        {opcode:"modelOBJList", blockType:BlockType.COMMAND, text:"definir modelo OBJ do objeto [NAME] a partir da lista [LIST]", arguments:{NAME:{type:S,defaultValue:"box"},LIST:{type:S,defaultValue:"list1"}}},
+        {opcode:"modelGLTFList", blockType:BlockType.COMMAND, text:"definir modelo (gltf/glb) do objeto [NAME] a partir da lista [LIST]", arguments:{NAME:{type:S,defaultValue:"box"},LIST:{type:S,defaultValue:"list1"}}},
+        {opcode:"playAnimation", blockType:BlockType.COMMAND, text:"reproduzir animação [ANIMATION] no objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"},ANIMATION:{type:S,defaultValue:"Animation"}}},
+        {opcode:"playAnimationUntilDone", blockType:BlockType.COMMAND, text:"reproduzir animação [ANIMATION] no objeto [NAME] até terminar", arguments:{NAME:{type:S,defaultValue:"box"},ANIMATION:{type:S,defaultValue:"Animation"}}},
+        {opcode:"remove", blockType:BlockType.COMMAND, text:"remover objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
         "---",
-        {opcode:"setPosition", blockType:BlockType.COMMAND, text:"Definir posição do objeto [NAME] para x [X] y [Y] z [Z]", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
-        {opcode:"setPositionX", blockType:BlockType.COMMAND, text:"Definir posição x do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setPositionY", blockType:BlockType.COMMAND, text:"Definir posição y do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setPositionZ", blockType:BlockType.COMMAND, text:"Definir posição z do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"changePositionX", blockType:BlockType.COMMAND, text:"Alterar posição x do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changePositionY", blockType:BlockType.COMMAND, text:"Alterar posição y do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changePositionZ", blockType:BlockType.COMMAND, text:"Alterar posição z do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"setRotation", blockType:BlockType.COMMAND, text:"Definir rotação do objeto [NAME] para x [X] y [Y] z [Z]", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
-        {opcode:"setRotationX", blockType:BlockType.COMMAND, text:"Definir rotação x do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setRotationY", blockType:BlockType.COMMAND, text:"Definir rotação y do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setRotationZ", blockType:BlockType.COMMAND, text:"Definir rotação z do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"changeRotationX", blockType:BlockType.COMMAND, text:"Rotacionar localmente o objeto [NAME] em x por [VALUE] graus", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationY", blockType:BlockType.COMMAND, text:"Rotacionar localmente o objeto [NAME] em y por [VALUE] graus", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationZ", blockType:BlockType.COMMAND, text:"Rotacionar localmente o objeto [NAME] em z por [VALUE] graus", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationXWorld", blockType:BlockType.COMMAND, text:"Rotacionar no eixo mundial o objeto [NAME] em x por [VALUE] graus", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationYWorld", blockType:BlockType.COMMAND, text:"Rotacionar no eixo mundial o objeto [NAME] em y por [VALUE] graus", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationZWorld", blockType:BlockType.COMMAND, text:"Rotacionar no eixo mundial o objeto [NAME] em z por [VALUE] graus", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"setScale", blockType:BlockType.COMMAND, text:"Definir escala do objeto [NAME] para x [X] y [Y] z [Z]", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:100},Y:{type:N,defaultValue:100},Z:{type:N,defaultValue:100}}},
-        {opcode:"setScaleX", blockType:BlockType.COMMAND, text:"Definir escala x do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
-        {opcode:"setScaleY", blockType:BlockType.COMMAND, text:"Definir escala y do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
-        {opcode:"setScaleZ", blockType:BlockType.COMMAND, text:"Definir escala z do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
-        {opcode:"changeScaleX", blockType:BlockType.COMMAND, text:"Alterar escala x do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
-        {opcode:"changeScaleY", blockType:BlockType.COMMAND, text:"Alterar escala y do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
-        {opcode:"changeScaleZ", blockType:BlockType.COMMAND, text:"Alterar escala z do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
-        {opcode:"moveSteps", blockType:BlockType.COMMAND, text:"Mover objeto [NAME] em [STEPS] passos", arguments:{NAME:{type:S,defaultValue:"box"},STEPS:{type:N,defaultValue:10}}},
-        {opcode:"moveToward", blockType:BlockType.COMMAND, text:"Mover objeto [NAME] em direção a x [X] y [Y] z [Z] por [STEPS] passos", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0},STEPS:{type:N,defaultValue:10}}},
-        {opcode:"pointObject", blockType:BlockType.COMMAND, text:"Apontar objeto [NAME] para o objeto [TARGET]", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
-        {opcode:"pointXYZ", blockType:BlockType.COMMAND, text:"Apontar objeto [NAME] para x [X] y [Y] z [Z]", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
-        {opcode:"glide", blockType:BlockType.COMMAND, text:"Deslizar objeto [NAME] para x [X] y [Y] z [Z] em [SECONDS] segundos", arguments:{NAME:{type:S,defaultValue:"box"},SECONDS:{type:N,defaultValue:1},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
+        {opcode:"setPosition", blockType:BlockType.COMMAND, text:"definir posição do objeto [NAME] para x [X] y [Y] z [Z]", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
+        {opcode:"setPositionX", blockType:BlockType.COMMAND, text:"definir posição x do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setPositionY", blockType:BlockType.COMMAND, text:"definir posição y do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setPositionZ", blockType:BlockType.COMMAND, text:"definir posição z do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"changePositionX", blockType:BlockType.COMMAND, text:"mudar posição x do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changePositionY", blockType:BlockType.COMMAND, text:"mudar posição y do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changePositionZ", blockType:BlockType.COMMAND, text:"mudar posição z do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"setRotation", blockType:BlockType.COMMAND, text:"definir rotação do objeto [NAME] para x [X] y [Y] z [Z]", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
+        {opcode:"setRotationX", blockType:BlockType.COMMAND, text:"definir rotação x do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setRotationY", blockType:BlockType.COMMAND, text:"definir rotação y do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setRotationZ", blockType:BlockType.COMMAND, text:"definir rotação z do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"changeRotationX", blockType:BlockType.COMMAND, text:"rotacionar objeto [NAME] em torno do eixo local x por [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationY", blockType:BlockType.COMMAND, text:"rotacionar objeto [NAME] em torno do eixo local y por [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationZ", blockType:BlockType.COMMAND, text:"rotacionar objeto [NAME] em torno do eixo local z por [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationXWorld", blockType:BlockType.COMMAND, text:"rotacionar objeto [NAME] em torno do eixo x do mundo por [VALUE] (não local)", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationYWorld", blockType:BlockType.COMMAND, text:"rotacionar objeto [NAME] em torno do eixo y do mundo por [VALUE] (não local)", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationZWorld", blockType:BlockType.COMMAND, text:"rotacionar objeto [NAME] em torno do eixo z do mundo por [VALUE] (não local)", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"setScale", blockType:BlockType.COMMAND, text:"definir escala do objeto [NAME] para x [X] y [Y] z [Z]", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:100},Y:{type:N,defaultValue:100},Z:{type:N,defaultValue:100}}},
+        {opcode:"setScaleX", blockType:BlockType.COMMAND, text:"definir escala x do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
+        {opcode:"setScaleY", blockType:BlockType.COMMAND, text:"definir escala y do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
+        {opcode:"setScaleZ", blockType:BlockType.COMMAND, text:"definir escala z do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
+        {opcode:"changeScaleX", blockType:BlockType.COMMAND, text:"mudar escala x do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"changeScaleY", blockType:BlockType.COMMAND, text:"mudar escala y do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"changeScaleZ", blockType:BlockType.COMMAND, text:"mudar escala z do objeto [NAME] em [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"moveSteps", blockType:BlockType.COMMAND, text:"mover objeto [NAME] por [STEPS] passos", arguments:{NAME:{type:S,defaultValue:"box"},STEPS:{type:N,defaultValue:10}}},
+        {opcode:"moveToward", blockType:BlockType.COMMAND, text:"mover objeto [NAME] em direção a x [X] y [Y] z [Z] por [STEPS] passos", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0},STEPS:{type:N,defaultValue:10}}},
+        {opcode:"pointObject", blockType:BlockType.COMMAND, text:"apontar objeto [NAME] para o objeto [TARGET]", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
+        {opcode:"pointXYZ", blockType:BlockType.COMMAND, text:"apontar objeto [NAME] para x [X] y [Y] z [Z]", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
+        {opcode:"glide", blockType:BlockType.COMMAND, text:"deslizar objeto [NAME] para x [X] y [Y] z [Z] em [SECONDS] segundos", arguments:{NAME:{type:S,defaultValue:"box"},SECONDS:{type:N,defaultValue:1},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
         "---",
-        {opcode:"useCamera", blockType:BlockType.COMMAND, text:"Definir objeto [NAME] como câmera", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"setColor", blockType:BlockType.COMMAND, text:"Definir cor do objeto [NAME] para [COLOR]", arguments:{NAME:{type:S,defaultValue:"box"},COLOR:{type:C,defaultValue:"#ffffff"}}},
-        {opcode:"setOpacity", blockType:BlockType.COMMAND, text:"Definir opacidade do objeto [NAME] para [VALUE] %", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setPassThrough", blockType:BlockType.COMMAND, text:"Definir 'atravessável' do objeto [NAME] para [STATE]", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
-        {opcode:"setPhysics", blockType:BlockType.COMMAND, text:"Definir física do objeto [NAME] para [STATE]", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
-        {opcode:"bounce", blockType:BlockType.COMMAND, text:"Fazer o objeto [NAME] quicar ao tocar outro objeto", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"isTouching", blockType:BlockType.BOOLEAN, text:"Objeto [NAME] está tocando o objeto [TARGET]?", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
+        {opcode:"useCamera", blockType:BlockType.COMMAND, text:"usar objeto [NAME] como câmera de visualização", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"setColor", blockType:BlockType.COMMAND, text:"definir cor do objeto [NAME] para [COLOR]", arguments:{NAME:{type:S,defaultValue:"box"},COLOR:{type:C,defaultValue:"#ffffff"}}},
+        {opcode:"setOpacity", blockType:BlockType.COMMAND, text:"definir opacidade do objeto [NAME] para [VALUE] %", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setPassThrough", blockType:BlockType.COMMAND, text:"definir passagem (pass-through) do objeto [NAME] para [STATE]", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
+        {opcode:"setPhysics", blockType:BlockType.COMMAND, text:"definir física do objeto [NAME] para [STATE]", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
+        {opcode:"bounce", blockType:BlockType.COMMAND, text:"fazer objeto [NAME] quicar ao tocar outro objeto", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"isTouching", blockType:BlockType.BOOLEAN, text:"objeto [NAME] está tocando o objeto [TARGET]?", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
         "---",
-        {opcode:"start", blockType:BlockType.COMMAND, text:"Iniciar renderização"},
-        {opcode:"stop", blockType:BlockType.COMMAND, text:"Parar renderização"},
-        {opcode:"isDrawing", blockType:BlockType.BOOLEAN, text:"Renderizando agora?"},
-        {opcode:"setFogDistance", blockType:BlockType.COMMAND, text:"Definir distância do nevoeiro para [VALUE]", arguments:{VALUE:{type:N,defaultValue:100}}},
-        {opcode:"setFogColor", blockType:BlockType.COMMAND, text:"Definir cor do nevoeiro para [COLOR]", arguments:{COLOR:{type:C,defaultValue:"#ffffff"}}},
-        {opcode:"setFog", blockType:BlockType.COMMAND, text:"Definir nevoeiro para [STATE]", arguments:{STATE:{type:S,menu:"onoff"}}},
+        {opcode:"start", blockType:BlockType.COMMAND, text:"iniciar desenho"},
+        {opcode:"stop", blockType:BlockType.COMMAND, text:"parar desenho"},
+        {opcode:"isDrawing", blockType:BlockType.BOOLEAN, text:"está desenhando agora?"},
+        {opcode:"setFogDistance", blockType:BlockType.COMMAND, text:"definir distância do nevoeiro para [VALUE]", arguments:{VALUE:{type:N,defaultValue:100}}},
+        {opcode:"setFogColor", blockType:BlockType.COMMAND, text:"definir cor do nevoeiro para [COLOR]", arguments:{COLOR:{type:C,defaultValue:"#ffffff"}}},
+        {opcode:"setFog", blockType:BlockType.COMMAND, text:"definir nevoeiro para [STATE]", arguments:{STATE:{type:S,menu:"onoff"}}},
         "---",
-        {opcode:"setLight", blockType:BlockType.COMMAND, text:"Definir objeto [NAME] como fonte de luz [STATE]", arguments:{NAME:{type:S,defaultValue:"light"},STATE:{type:S,menu:"onoff"}}},
-        {opcode:"setLightIntensity", blockType:BlockType.COMMAND, text:"Definir intensidade da luz do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"light"},VALUE:{type:N,defaultValue:10}}},
-        {opcode:"setLightColor", blockType:BlockType.COMMAND, text:"Definir cor da luz do objeto [NAME] para [COLOR]", arguments:{NAME:{type:S,defaultValue:"light"},COLOR:{type:C,defaultValue:"#ffffff"}}},
-        {opcode:"setReflectivity", blockType:BlockType.COMMAND, text:"Definir refletividade do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"setRTXShadows", blockType:BlockType.COMMAND, text:"Definir sombras RTX para [STATE]", arguments:{STATE:{type:S,menu:"onoff"}}},
+        {opcode:"setLight", blockType:BlockType.COMMAND, text:"definir objeto [NAME] como fonte de luz [STATE]", arguments:{NAME:{type:S,defaultValue:"light"},STATE:{type:S,menu:"onoff"}}},
+        {opcode:"setLightIntensity", blockType:BlockType.COMMAND, text:"definir intensidade da luz do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"light"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"setLightColor", blockType:BlockType.COMMAND, text:"definir cor da luz do objeto [NAME] para [COLOR]", arguments:{NAME:{type:S,defaultValue:"light"},COLOR:{type:C,defaultValue:"#ffffff"}}},
+        {opcode:"setReflectivity", blockType:BlockType.COMMAND, text:"definir refletividade do objeto [NAME] para [VALUE]", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"setRTXShadows", blockType:BlockType.COMMAND, text:"definir sombras RTX avançadas para [STATE]", arguments:{STATE:{type:S,menu:"onoff"}}},
         "---",
-        {opcode:"getPositionX", blockType:BlockType.REPORTER, text:"Posição x do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getPositionY", blockType:BlockType.REPORTER, text:"Posição y do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getPositionZ", blockType:BlockType.REPORTER, text:"Posição z do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getRotationX", blockType:BlockType.REPORTER, text:"Rotação x do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getRotationY", blockType:BlockType.REPORTER, text:"Rotação y do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getRotationZ", blockType:BlockType.REPORTER, text:"Rotação z do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getScaleX", blockType:BlockType.REPORTER, text:"Escala x do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getScaleY", blockType:BlockType.REPORTER, text:"Escala y do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getScaleZ", blockType:BlockType.REPORTER, text:"Escala z do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"distance", blockType:BlockType.REPORTER, text:"Distância do objeto [NAME] até o objeto [TARGET]", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}}
+        {opcode:"getPositionX", blockType:BlockType.REPORTER, text:"posição x do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getPositionY", blockType:BlockType.REPORTER, text:"posição y do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getPositionZ", blockType:BlockType.REPORTER, text:"posição z do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getRotationX", blockType:BlockType.REPORTER, text:"rotação x do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getRotationY", blockType:BlockType.REPORTER, text:"rotação y do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getRotationZ", blockType:BlockType.REPORTER, text:"rotação z do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getScaleX", blockType:BlockType.REPORTER, text:"escala x do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getScaleY", blockType:BlockType.REPORTER, text:"escala y do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getScaleZ", blockType:BlockType.REPORTER, text:"escala z do objeto [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"distance", blockType:BlockType.REPORTER, text:"distância do objeto [NAME] ao objeto [TARGET]", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}}
       ], menus:{axis:{acceptReporters:true,items:["x","y","z"]},onoff}};
     }
 
@@ -344,13 +369,13 @@
     setRotationX(a){const o=object(a.NAME);if(o)o.rotation.x=THREE.MathUtils.degToRad(num(a.VALUE));}
     setRotationY(a){const o=object(a.NAME);if(o)o.rotation.y=THREE.MathUtils.degToRad(num(a.VALUE));}
     setRotationZ(a){const o=object(a.NAME);if(o)o.rotation.z=THREE.MathUtils.degToRad(num(a.VALUE));}
-    // [FIX v1.2.1] Rotação em eixo local: rotaciona relativo à orientação do objeto
-    //   Antes: o.rotation.x += deg (rotação Euler no eixo mundial → independente da direção do objeto)
-    //   Depois: quaternion.multiply(deltaQuat no eixo local) → rotação no eixo local do objeto
+    // [FIX v1.2.1] Rotação em eixo local: rotacionar em relação aos eixos locais do objeto
+    //   Antes: o.rotation.x += deg (rotação Euler em eixo do mundo → independente da orientação do objeto)
+    //   Depois: quaternion.multiply(deltaQuat no eixo local) → rotaciona em torno do eixo local do objeto
     changeRotationX(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisX,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.multiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationY(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisY,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.multiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationZ(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisZ,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.multiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
-    // Rotação no eixo mundial (não afetada pela orientação do objeto)
+    // Rotação em eixo do mundo (não afetada pela orientação do próprio objeto)
     changeRotationXWorld(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisX,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.premultiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationYWorld(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisY,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.premultiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationZWorld(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisZ,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.premultiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
@@ -397,7 +422,10 @@
 
     async textureCostume(a,util){const o=object(a.NAME);if(!o)return;const costume=util.target.sprite.costumes.find(c=>c.name===name(a.COSTUME));if(!costume||!costume.asset)return;const texture=await new THREE.TextureLoader().loadAsync(costume.asset.encodeDataURI());texture.colorSpace=THREE.SRGBColorSpace;setMaterial(o,m=>{m.map=texture;m.transparent=true;m.depthWrite=false;m.needsUpdate=true;});}
     async textureURL(a){const o=object(a.NAME);if(!o)return;const url=name(a.URL);if(!await Scratch.canFetch(url))return;const response=await Scratch.fetch(url);const blob=await response.blob();const local=URL.createObjectURL(blob);try{const texture=await new THREE.TextureLoader().loadAsync(local);texture.colorSpace=THREE.SRGBColorSpace;setMaterial(o,m=>{m.map=texture;m.transparent=true;m.depthWrite=false;m.needsUpdate=true;});}finally{URL.revokeObjectURL(local);}}
-    async modelList(a,util){const n=name(a.NAME),items=listValue(a.LIST,util);if(!objects.has(n)||!items.length)return;let root;if(items.every(v=>Number.isFinite(Number(v))&&Number(v)>=0&&Number(v)<=255)){const bytes=new Uint8Array(items.map(Number));const gltf=await new Promise((resolve,reject)=>new GLTFLoader().parse(bytes.buffer,"",resolve,reject));root=gltf.scene;}else{const text=items.join("\n").trim();if(text.startsWith("{")||text.startsWith("[")){const gltf=await new Promise((resolve,reject)=>new GLTFLoader().parse(text,"",resolve,reject));root=gltf.scene;}else root=new OBJLoader().parse(text);}replaceObject(n,root);}
+    modelOBJList(a,util){const n=name(a.NAME),items=listValue(a.LIST,util);if(!objects.has(n)||!items.length)return;replaceObject(n,new OBJLoader().parse(items.join("\n")));}
+    async modelGLTFList(a,util){const n=name(a.NAME),items=listValue(a.LIST,util);if(!objects.has(n)||!items.length)return;replaceObject(n,await loadGLTFList(items));}
+    playAnimation(a){playObjectAnimation(object(a.NAME),a.ANIMATION);}
+    playAnimationUntilDone(a,util){const o=object(a.NAME);if(!o)return;if(!util.stackFrame.action){const action=playObjectAnimation(o,a.ANIMATION);if(!action)return;util.stackFrame.action=action;}if(util.stackFrame.action.isRunning())util.yield();}
   }
 
   runtime.on("PROJECT_STOP_ALL", () => { drawing = false; clearSkin(); });
