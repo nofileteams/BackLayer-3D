@@ -3,7 +3,7 @@
 // Description: 3D objects rendered behind every Scratch sprite.
 // By: nofileteams
 // License: MIT
-// Version: 1.3.0
+// Version: 1.3.1
 
 (async function (Scratch) {
   "use strict";
@@ -60,7 +60,7 @@
   let skinId = null;
   let rtxShadows = false;
 
-  // [FIX] 호출마다 할당을 피하기 위해 재사용 가능한 객체
+  // [FIX] Reusable scratch objects to avoid per-call allocation
   const _localAxisX = new THREE.Vector3(1, 0, 0);
   const _localAxisY = new THREE.Vector3(0, 1, 0);
   const _localAxisZ = new THREE.Vector3(0, 0, 1);
@@ -180,6 +180,26 @@
     const variable = util.target.lookupVariableByNameAndType(name(listName), "list");
     return variable ? variable.value : [];
   };
+  const loadGLTFList = async items => {
+    const numeric = items.length > 0 && items.every(v => Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 255);
+    const data = numeric ? Uint8Array.from(items, Number).buffer : items.join("\n").trim();
+    const gltf = await new Promise((resolve, reject) => new GLTFLoader().parse(data, "", resolve, reject));
+    gltf.scene.userData.animationClips = gltf.animations || [];
+    gltf.scene.userData.animationMixer = new THREE.AnimationMixer(gltf.scene);
+    return gltf.scene;
+  };
+  const playObjectAnimation = (root, animationName) => {
+    if (!root || !root.userData.animationMixer) return null;
+    const clip = root.userData.animationClips.find(item => item.name === name(animationName));
+    if (!clip) return null;
+    const mixer = root.userData.animationMixer;
+    mixer.stopAllAction();
+    const action = mixer.clipAction(clip);
+    action.reset().setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true;
+    action.play();
+    return action;
+  };
   const updateFog = () => scene.fog = fogEnabled ? new THREE.Fog(fogColor, 1, Math.max(1, fogDistance)) : null;
   const box = root => new THREE.Box3().setFromObject(root);
   const touching = (a,b) => a && b && !a.userData.passThrough && !b.userData.passThrough && box(a).intersectsBox(box(b));
@@ -230,7 +250,9 @@
     frame = requestAnimationFrame(renderLoop);
     if (!drawing) return;
     if (contextLost) return;
-    updatePhysics(Math.min(_physicsClock.getDelta(), 0.05));
+    const delta = Math.min(_physicsClock.getDelta(), 0.05);
+    updatePhysics(delta);
+    for (const o of objects.values()) if (o.userData.animationMixer) o.userData.animationMixer.update(delta);
     const size = renderer.getNativeSize();
     if (canvas.width !== size[0] || canvas.height !== size[1]) {
       glRenderer.setSize(size[0], size[1], false);
@@ -263,70 +285,73 @@
         {opcode:"create", blockType:BlockType.COMMAND, text:"오브젝트 [NAME] 생성", arguments:{NAME:{type:S,defaultValue:"box"}}},
         {opcode:"textureCostume", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 텍스처를 [COSTUME]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},COSTUME:{type:S,defaultValue:"costume1"}}},
         {opcode:"textureURL", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 텍스처를 URL [URL]에서 불러오기", arguments:{NAME:{type:S,defaultValue:"box"},URL:{type:S,defaultValue:"https://example.com/test.png"}}},
-        {opcode:"modelList", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 모델을 리스트 [LIST]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},LIST:{type:S,defaultValue:"list1"}}},
+        {opcode:"modelOBJList", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 OBJ 모델을 리스트 [LIST]에서 설정", arguments:{NAME:{type:S,defaultValue:"box"},LIST:{type:S,defaultValue:"list1"}}},
+        {opcode:"modelGLTFList", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 (gltf/glb) 모델을 리스트 [LIST]에서 설정", arguments:{NAME:{type:S,defaultValue:"box"},LIST:{type:S,defaultValue:"list1"}}},
+        {opcode:"playAnimation", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]에서 애니메이션 [ANIMATION] 재생", arguments:{NAME:{type:S,defaultValue:"box"},ANIMATION:{type:S,defaultValue:"Animation"}}},
+        {opcode:"playAnimationUntilDone", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]에서 애니메이션 [ANIMATION]을 완료될 때까지 재생", arguments:{NAME:{type:S,defaultValue:"box"},ANIMATION:{type:S,defaultValue:"Animation"}}},
         {opcode:"remove", blockType:BlockType.COMMAND, text:"오브젝트 [NAME] 제거", arguments:{NAME:{type:S,defaultValue:"box"}}},
         "---",
         {opcode:"setPosition", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 위치를 x [X] y [Y] z [Z]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
         {opcode:"setPositionX", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 x 위치를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
         {opcode:"setPositionY", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 y 위치를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setPositionZ", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 z 위치를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"changePositionX", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 x 위치를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changePositionY", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 y 위치를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changePositionZ", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 z 위치를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"setRotation", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 회전을 x [X] y [Y] z [Z]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
-        {opcode:"setRotationX", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 x 회전을 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setRotationY", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 y 회전을 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setRotationZ", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 z 회전을 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"changeRotationX", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]을 로컬 축 기준으로 x축 방향으로 [VALUE]도 회전", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationY", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]을 로컬 축 기준으로 y축 방향으로 [VALUE]도 회전", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationZ", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]을 로컬 축 기준으로 z축 방향으로 [VALUE]도 회전", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationXWorld", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]을 월드 축 기준으로 x축 방향으로 [VALUE]도 회전", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationYWorld", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]을 월드 축 기준으로 y축 방향으로 [VALUE]도 회전", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationZWorld", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]을 월드 축 기준으로 z축 방향으로 [VALUE]도 회전", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"setScale", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 크기를 x [X] y [Y] z [Z]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:100},Y:{type:N,defaultValue:100},Z:{type:N,defaultValue:100}}},
-        {opcode:"setScaleX", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 x 크기를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
-        {opcode:"setScaleY", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 y 크기를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
-        {opcode:"setScaleZ", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 z 크기를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
-        {opcode:"changeScaleX", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 x 크기를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
-        {opcode:"changeScaleY", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 y 크기를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
-        {opcode:"changeScaleZ", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 z 크기를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
-        {opcode:"moveSteps", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]을 [STEPS] 스텝 이동", arguments:{NAME:{type:S,defaultValue:"box"},STEPS:{type:N,defaultValue:10}}},
-        {opcode:"moveToward", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]을 x [X] y [Y] z [Z] 방향으로 [STEPS] 스텝 이동", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0},STEPS:{type:N,defaultValue:10}}},
-        {opcode:"pointObject", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 방향을 오ブ젝트 [TARGET]로 향하게 하기", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
-        {opcode:"pointXYZ", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 방향을 x [X] y [Y] z [Z]로 향하게 하기", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
-        {opcode:"glide", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]을 [SECONDS]초 동안 x [X] y [Y] z [Z]로 이동", arguments:{NAME:{type:S,defaultValue:"box"},SECONDS:{type:N,defaultValue:1},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
+        {opcode:"setPositionZ", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 z 위치를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"changePositionX", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 x 위치를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changePositionY", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 y 위치를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changePositionZ", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 z 위치를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"setRotation", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 회전을 x [X] y [Y] z [Z]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
+        {opcode:"setRotationX", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 x 회전을 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setRotationY", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 y 회전을 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setRotationZ", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 z 회전을 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"changeRotationX", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 로컬 x 축을 기준으로 [VALUE]만큼 회전", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationY", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 로컬 y 축을 기준으로 [VALUE]만큼 회전", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationZ", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 로컬 z 축을 기준으로 [VALUE]만큼 회전", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationXWorld", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 월드 x 축을 기준으로 [VALUE]만큼 회전 (로컬 아님)", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationYWorld", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 월드 y 축을 기준으로 [VALUE]만큼 회전 (로컬 아님)", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationZWorld", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 월드 z 축을 기준으로 [VALUE]만큼 회전 (로컬 아님)", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"setScale", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 크기를 x [X] y [Y] z [Z]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:100},Y:{type:N,defaultValue:100},Z:{type:N,defaultValue:100}}},
+        {opcode:"setScaleX", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 x 크기를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
+        {opcode:"setScaleY", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 y 크기를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
+        {opcode:"setScaleZ", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 z 크기를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
+        {opcode:"changeScaleX", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 x 크기를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"changeScaleY", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 y 크기를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"changeScaleZ", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 z 크기를 [VALUE]만큼 변경", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"moveSteps", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 [STEPS] 스텝만큼 이동", arguments:{NAME:{type:S,defaultValue:"box"},STEPS:{type:N,defaultValue:10}}},
+        {opcode:"moveToward", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 x [X] y [Y] z [Z] 방향으로 [STEPS] 스텝 이동", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0},STEPS:{type:N,defaultValue:10}}},
+        {opcode:"pointObject", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 오브젝트 [TARGET]쪽으로 향하게 하기", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
+        {opcode:"pointXYZ", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 좌표 x [X] y [Y] z [Z]로 향하게 하기", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
+        {opcode:"glide", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 [SECONDS]초 동안 x [X] y [Y] z [Z]로 글라이드", arguments:{NAME:{type:S,defaultValue:"box"},SECONDS:{type:N,defaultValue:1},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
         "---",
-        {opcode:"useCamera", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]을 시점 카메라로 사용", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"setColor", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 색을 [COLOR]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},COLOR:{type:C,defaultValue:"#ffffff"}}},
-        {opcode:"setOpacity", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 투명도를 [VALUE] %로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setPassThrough", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 통과 상태를 [STATE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
-        {opcode:"setPhysics", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 물리(physics)를 [STATE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
-        {opcode:"bounce", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]이 다른 오ブ젝트에 닿으면 튕기기", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"isTouching", blockType:BlockType.BOOLEAN, text:"오ブ젝트 [NAME]이 오ブ젝트 [TARGET]에 닿았는가?", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
+        {opcode:"useCamera", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 뷰포인트 카메라로 사용", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"setColor", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 색을 [COLOR]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},COLOR:{type:C,defaultValue:"#ffffff"}}},
+        {opcode:"setOpacity", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 투명도를 [VALUE] %로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setPassThrough", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 통과(패스스루)를 [STATE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
+        {opcode:"setPhysics", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 물리를 [STATE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
+        {opcode:"bounce", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]이 다른 오브젝트와 닿으면 튕기기", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"isTouching", blockType:BlockType.BOOLEAN, text:"오브젝트 [NAME]이 오브젝트 [TARGET]에 닿았는가", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
         "---",
         {opcode:"start", blockType:BlockType.COMMAND, text:"렌더링 시작"},
         {opcode:"stop", blockType:BlockType.COMMAND, text:"렌더링 중지"},
-        {opcode:"isDrawing", blockType:BlockType.BOOLEAN, text:"지금 렌더링 중인가?"},
-        {opcode:"setFogDistance", blockType:BlockType.COMMAND, text:"안개 거리(Fog)를 [VALUE]로 설정", arguments:{VALUE:{type:N,defaultValue:100}}},
+        {opcode:"isDrawing", blockType:BlockType.BOOLEAN, text:"렌더링 중인가?"},
+        {opcode:"setFogDistance", blockType:BlockType.COMMAND, text:"안개 거리를 [VALUE]로 설정", arguments:{VALUE:{type:N,defaultValue:100}}},
         {opcode:"setFogColor", blockType:BlockType.COMMAND, text:"안개 색을 [COLOR]로 설정", arguments:{COLOR:{type:C,defaultValue:"#ffffff"}}},
         {opcode:"setFog", blockType:BlockType.COMMAND, text:"안개를 [STATE]로 설정", arguments:{STATE:{type:S,menu:"onoff"}}},
         "---",
-        {opcode:"setLight", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]을 광원으로 설정 [STATE]", arguments:{NAME:{type:S,defaultValue:"light"},STATE:{type:S,menu:"onoff"}}},
-        {opcode:"setLightIntensity", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 빛 세기를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"light"},VALUE:{type:N,defaultValue:10}}},
-        {opcode:"setLightColor", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 빛 색을 [COLOR]로 설정", arguments:{NAME:{type:S,defaultValue:"light"},COLOR:{type:C,defaultValue:"#ffffff"}}},
-        {opcode:"setReflectivity", blockType:BlockType.COMMAND, text:"오ブ젝트 [NAME]의 반사 강도를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"setRTXShadows", blockType:BlockType.COMMAND, text:"RTX 그림자를 [STATE]로 설정", arguments:{STATE:{type:S,menu:"onoff"}}},
+        {opcode:"setLight", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]를 광원으로 [STATE]", arguments:{NAME:{type:S,defaultValue:"light"},STATE:{type:S,menu:"onoff"}}},
+        {opcode:"setLightIntensity", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 광원 강도를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"light"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"setLightColor", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 광원 색을 [COLOR]로 설정", arguments:{NAME:{type:S,defaultValue:"light"},COLOR:{type:C,defaultValue:"#ffffff"}}},
+        {opcode:"setReflectivity", blockType:BlockType.COMMAND, text:"오브젝트 [NAME]의 반사도를 [VALUE]로 설정", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"setRTXShadows", blockType:BlockType.COMMAND, text:"고급 RTX 그림자를 [STATE]로 설정", arguments:{STATE:{type:S,menu:"onoff"}}},
         "---",
-        {opcode:"getPositionX", blockType:BlockType.REPORTER, text:"오ブ젝트 [NAME]의 x 위치", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getPositionY", blockType:BlockType.REPORTER, text:"오ブ젝트 [NAME]의 y 위치", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getPositionZ", blockType:BlockType.REPORTER, text:"오ブ젝트 [NAME]의 z 위치", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getRotationX", blockType:BlockType.REPORTER, text:"오ブ젝트 [NAME]의 x 회전", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getRotationY", blockType:BlockType.REPORTER, text:"오ブ젝트 [NAME]의 y 회전", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getRotationZ", blockType:BlockType.REPORTER, text:"오ブ젝트 [NAME]의 z 회전", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getScaleX", blockType:BlockType.REPORTER, text:"오ブ젝트 [NAME]의 x 크기", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getScaleY", blockType:BlockType.REPORTER, text:"오ブ젝트 [NAME]의 y 크기", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getScaleZ", blockType:BlockType.REPORTER, text:"오ブ젝트 [NAME]의 z 크기", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"distance", blockType:BlockType.REPORTER, text:"오ブ젝트 [NAME]에서 오ブ젝트 [TARGET]까지의 거리", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}}
+        {opcode:"getPositionX", blockType:BlockType.REPORTER, text:"오브젝트 [NAME]의 x 위치", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getPositionY", blockType:BlockType.REPORTER, text:"오브젝트 [NAME]의 y 위치", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getPositionZ", blockType:BlockType.REPORTER, text:"오브젝트 [NAME]의 z 위치", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getRotationX", blockType:BlockType.REPORTER, text:"오브젝트 [NAME]의 x 회전", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getRotationY", blockType:BlockType.REPORTER, text:"오브젝트 [NAME]의 y 회전", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getRotationZ", blockType:BlockType.REPORTER, text:"오브젝트 [NAME]의 z 회전", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getScaleX", blockType:BlockType.REPORTER, text:"오브젝트 [NAME]의 x 크기", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getScaleY", blockType:BlockType.REPORTER, text:"오브젝트 [NAME]의 y 크기", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getScaleZ", blockType:BlockType.REPORTER, text:"오브젝트 [NAME]의 z 크기", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"distance", blockType:BlockType.REPORTER, text:"오브젝트 [NAME]에서 오브젝트 [TARGET]까지의 거리", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}}
       ], menus:{axis:{acceptReporters:true,items:["x","y","z"]},onoff}};
     }
 
@@ -344,13 +369,13 @@
     setRotationX(a){const o=object(a.NAME);if(o)o.rotation.x=THREE.MathUtils.degToRad(num(a.VALUE));}
     setRotationY(a){const o=object(a.NAME);if(o)o.rotation.y=THREE.MathUtils.degToRad(num(a.VALUE));}
     setRotationZ(a){const o=object(a.NAME);if(o)o.rotation.z=THREE.MathUtils.degToRad(num(a.VALUE));}
-    // [FIX v1.2.1] 로컬 축 회전: 객체의 방향을 기준으로 회전
-    //   이전: o.rotation.x += deg (월드 축에 대한 Euler 회전 → 객체가 향하는 방향과 무관함)
-    //   이후: quaternion.multiply(deltaQuat)로 로컬 축에 대해 회전 → 객체의 로컬 축 기준 회전
+    // [수정 v1.2.1] 로컬 축 회전: 오브젝트의 로컬 축을 기준으로 회전
+    //   이전: o.rotation.x += deg (월드 축의 Euler 회전 → 오브젝트의 방향과 무관)
+    //   이후: quaternion.multiply(deltaQuat on local axis) → 오브젝트의 로컬 축에서 회전
     changeRotationX(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisX,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.multiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationY(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisY,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.multiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationZ(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisZ,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.multiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
-    // 월드 축 회전 (객체의 방향에 영향받지 않음)
+    // 월드 축 회전 (오브젝트 자신의 방향에 영향받지 않음)
     changeRotationXWorld(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisX,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.premultiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationYWorld(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisY,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.premultiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationZWorld(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisZ,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.premultiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
@@ -397,7 +422,10 @@
 
     async textureCostume(a,util){const o=object(a.NAME);if(!o)return;const costume=util.target.sprite.costumes.find(c=>c.name===name(a.COSTUME));if(!costume||!costume.asset)return;const texture=await new THREE.TextureLoader().loadAsync(costume.asset.encodeDataURI());texture.colorSpace=THREE.SRGBColorSpace;setMaterial(o,m=>{m.map=texture;m.transparent=true;m.depthWrite=false;m.needsUpdate=true;});}
     async textureURL(a){const o=object(a.NAME);if(!o)return;const url=name(a.URL);if(!await Scratch.canFetch(url))return;const response=await Scratch.fetch(url);const blob=await response.blob();const local=URL.createObjectURL(blob);try{const texture=await new THREE.TextureLoader().loadAsync(local);texture.colorSpace=THREE.SRGBColorSpace;setMaterial(o,m=>{m.map=texture;m.transparent=true;m.depthWrite=false;m.needsUpdate=true;});}finally{URL.revokeObjectURL(local);}}
-    async modelList(a,util){const n=name(a.NAME),items=listValue(a.LIST,util);if(!objects.has(n)||!items.length)return;let root;if(items.every(v=>Number.isFinite(Number(v))&&Number(v)>=0&&Number(v)<=255)){const bytes=new Uint8Array(items.map(Number));const gltf=await new Promise((resolve,reject)=>new GLTFLoader().parse(bytes.buffer,"",resolve,reject));root=gltf.scene;}else{const text=items.join("\n").trim();if(text.startsWith("{")||text.startsWith("[")){const gltf=await new Promise((resolve,reject)=>new GLTFLoader().parse(text,"",resolve,reject));root=gltf.scene;}else root=new OBJLoader().parse(text);}replaceObject(n,root);}
+    modelOBJList(a,util){const n=name(a.NAME),items=listValue(a.LIST,util);if(!objects.has(n)||!items.length)return;replaceObject(n,new OBJLoader().parse(items.join("\n")));}
+    async modelGLTFList(a,util){const n=name(a.NAME),items=listValue(a.LIST,util);if(!objects.has(n)||!items.length)return;replaceObject(n,await loadGLTFList(items));}
+    playAnimation(a){playObjectAnimation(object(a.NAME),a.ANIMATION);}
+    playAnimationUntilDone(a,util){const o=object(a.NAME);if(!o)return;if(!util.stackFrame.action){const action=playObjectAnimation(o,a.ANIMATION);if(!action)return;util.stackFrame.action=action;}if(util.stackFrame.action.isRunning())util.yield();}
   }
 
   runtime.on("PROJECT_STOP_ALL", () => { drawing = false; clearSkin(); });
