@@ -3,7 +3,7 @@
 // Description: 3D objects rendered behind every Scratch sprite.
 // By: nofileteams
 // License: MIT
-// Version: 1.3.0
+// Version: 1.3.1
 
 (async function (Scratch) {
   "use strict";
@@ -60,7 +60,7 @@
   let skinId = null;
   let rtxShadows = false;
 
-  // [FIX] Tekrar kullanılan nesneler — her çağrıda yeni nesne oluşturmayı önlemek için yeniden kullanılabilir öğeler
+  // [FIX] Reusable scratch objects to avoid per-call allocation
   const _localAxisX = new THREE.Vector3(1, 0, 0);
   const _localAxisY = new THREE.Vector3(0, 1, 0);
   const _localAxisZ = new THREE.Vector3(0, 0, 1);
@@ -180,6 +180,26 @@
     const variable = util.target.lookupVariableByNameAndType(name(listName), "list");
     return variable ? variable.value : [];
   };
+  const loadGLTFList = async items => {
+    const numeric = items.length > 0 && items.every(v => Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 255);
+    const data = numeric ? Uint8Array.from(items, Number).buffer : items.join("\n").trim();
+    const gltf = await new Promise((resolve, reject) => new GLTFLoader().parse(data, "", resolve, reject));
+    gltf.scene.userData.animationClips = gltf.animations || [];
+    gltf.scene.userData.animationMixer = new THREE.AnimationMixer(gltf.scene);
+    return gltf.scene;
+  };
+  const playObjectAnimation = (root, animationName) => {
+    if (!root || !root.userData.animationMixer) return null;
+    const clip = root.userData.animationClips.find(item => item.name === name(animationName));
+    if (!clip) return null;
+    const mixer = root.userData.animationMixer;
+    mixer.stopAllAction();
+    const action = mixer.clipAction(clip);
+    action.reset().setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true;
+    action.play();
+    return action;
+  };
   const updateFog = () => scene.fog = fogEnabled ? new THREE.Fog(fogColor, 1, Math.max(1, fogDistance)) : null;
   const box = root => new THREE.Box3().setFromObject(root);
   const touching = (a,b) => a && b && !a.userData.passThrough && !b.userData.passThrough && box(a).intersectsBox(box(b));
@@ -230,7 +250,9 @@
     frame = requestAnimationFrame(renderLoop);
     if (!drawing) return;
     if (contextLost) return;
-    updatePhysics(Math.min(_physicsClock.getDelta(), 0.05));
+    const delta = Math.min(_physicsClock.getDelta(), 0.05);
+    updatePhysics(delta);
+    for (const o of objects.values()) if (o.userData.animationMixer) o.userData.animationMixer.update(delta);
     const size = renderer.getNativeSize();
     if (canvas.width !== size[0] || canvas.height !== size[1]) {
       glRenderer.setSize(size[0], size[1], false);
@@ -257,75 +279,78 @@
   class BackLayer3D {
     getInfo() {
       const S = ArgumentType.STRING, N = ArgumentType.NUMBER, C = ArgumentType.COLOR;
-      const onoff = {acceptReporters:true, items:["on","off"]};
-      return {id:"backlayer3d", name:"BackLayer 3D", color1:"#5B5FEF", color2:"#4549C4", blocks:[
-        {opcode:"reset", blockType:BlockType.COMMAND, text:"Tümünü sıfırla"},
-        {opcode:"create", blockType:BlockType.COMMAND, text:"Nesne oluştur [NAME]", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"textureCostume", blockType:BlockType.COMMAND, text:"Nesne [NAME] dokusunu [COSTUME] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},COSTUME:{type:S,defaultValue:"costume1"}}},
-        {opcode:"textureURL", blockType:BlockType.COMMAND, text:"Nesne [NAME] dokusunu URL [URL] adresinden yükle", arguments:{NAME:{type:S,defaultValue:"box"},URL:{type:S,defaultValue:"https://example.com/test.png"}}},
-        {opcode:"modelList", blockType:BlockType.COMMAND, text:"Nesne [NAME] modelini liste [LIST] ile ayarla", arguments:{NAME:{type:S,defaultValue:"box"},LIST:{type:S,defaultValue:"list1"}}},
-        {opcode:"remove", blockType:BlockType.COMMAND, text:"Nesne [NAME] kaldır", arguments:{NAME:{type:S,defaultValue:"box"}}},
+      const onoff = {acceptReporters:true, items:[{text:"Açık",value:"on"},{text:"Kapalı",value:"off"}]};
+      return {id:"backlayer3d", name:"Arka Katman 3D", color1:"#5B5FEF", color2:"#4549C4", blocks:[
+        {opcode:"reset", blockType:BlockType.COMMAND, text:"tümünü sıfırla"},
+        {opcode:"create", blockType:BlockType.COMMAND, text:"Nesne [NAME] oluştur", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"textureCostume", blockType:BlockType.COMMAND, text:"Nesne [NAME] dokusunu [COSTUME] kostümüne ayarla", arguments:{NAME:{type:S,defaultValue:"box"},COSTUME:{type:S,defaultValue:"costume1"}}},
+        {opcode:"textureURL", blockType:BlockType.COMMAND, text:"Nesne [NAME] dokusunu [URL] adresinden yükle", arguments:{NAME:{type:S,defaultValue:"box"},URL:{type:S,defaultValue:"https://example.com/test.png"}}},
+        {opcode:"modelOBJList", blockType:BlockType.COMMAND, text:"Nesne [NAME] için OBJ modelini [LIST] listesinden ayarla", arguments:{NAME:{type:S,defaultValue:"box"},LIST:{type:S,defaultValue:"list1"}}},
+        {opcode:"modelGLTFList", blockType:BlockType.COMMAND, text:"Nesne [NAME] için (gltf/glb) modelini [LIST] listesinden ayarla", arguments:{NAME:{type:S,defaultValue:"box"},LIST:{type:S,defaultValue:"list1"}}},
+        {opcode:"playAnimation", blockType:BlockType.COMMAND, text:"Nesne [NAME] için [ANIMATION] animasyonunu oynat", arguments:{NAME:{type:S,defaultValue:"box"},ANIMATION:{type:S,defaultValue:"Animation"}}},
+        {opcode:"playAnimationUntilDone", blockType:BlockType.COMMAND, text:"Nesne [NAME] için [ANIMATION] animasyonunu bitene kadar oynat", arguments:{NAME:{type:S,defaultValue:"box"},ANIMATION:{type:S,defaultValue:"Animation"}}},
+        {opcode:"remove", blockType:BlockType.COMMAND, text:"Nesne [NAME] sil", arguments:{NAME:{type:S,defaultValue:"box"}}},
         "---",
         {opcode:"setPosition", blockType:BlockType.COMMAND, text:"Nesne [NAME] konumunu x [X] y [Y] z [Z] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
-        {opcode:"setPositionX", blockType:BlockType.COMMAND, text:"Nesne [NAME] konumunun x bileşenini [VALUE] yap", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setPositionY", blockType:BlockType.COMMAND, text:"Nesne [NAME] konumunun y bileşenini [VALUE] yap", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setPositionZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] konumunun z bileşenini [VALUE] yap", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"changePositionX", blockType:BlockType.COMMAND, text:"Nesne [NAME] x konumunu [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changePositionY", blockType:BlockType.COMMAND, text:"Nesne [NAME] y konumunu [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changePositionZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] z konumunu [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"setRotation", blockType:BlockType.COMMAND, text:"Nesne [NAME] dönüşünü x [X] y [Y] z [Z] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
-        {opcode:"setRotationX", blockType:BlockType.COMMAND, text:"Nesne [NAME] için x dönüşünü [VALUE] yap", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setRotationY", blockType:BlockType.COMMAND, text:"Nesne [NAME] için y dönüşünü [VALUE] yap", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setRotationZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] için z dönüşünü [VALUE] yap", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"changeRotationX", blockType:BlockType.COMMAND, text:"Nesneyi yerel eksende x ekseni etrafında [VALUE] derece döndür", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationY", blockType:BlockType.COMMAND, text:"Nesneyi yerel eksende y ekseni etrafında [VALUE] derece döndür", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationZ", blockType:BlockType.COMMAND, text:"Nesneyi yerel eksende z ekseni etrafında [VALUE] derece döndür", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationXWorld", blockType:BlockType.COMMAND, text:"Nesneyi dünya ekseninde x etrafında [VALUE] derece döndür", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationYWorld", blockType:BlockType.COMMAND, text:"Nesneyi dünya ekseninde y etrafında [VALUE] derece döndür", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"changeRotationZWorld", blockType:BlockType.COMMAND, text:"Nesneyi dünya ekseninde z etrafında [VALUE] derece döndür", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"setPositionX", blockType:BlockType.COMMAND, text:"Nesne [NAME] konumunu x [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setPositionY", blockType:BlockType.COMMAND, text:"Nesne [NAME] konumunu y [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setPositionZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] konumunu z [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"changePositionX", blockType:BlockType.COMMAND, text:"Nesne [NAME] konumunu x ekseninde [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changePositionY", blockType:BlockType.COMMAND, text:"Nesne [NAME] konumunu y ekseninde [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changePositionZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] konumunu z ekseninde [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"setRotation", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü x [X] y [Y] z [Z] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
+        {opcode:"setRotationX", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü x [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setRotationY", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü y [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"setRotationZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü z [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
+        {opcode:"changeRotationX", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü x ekseninde [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationY", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü y ekseninde [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü z ekseninde [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationXWorld", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü x ekseninde dünya koordinatlarına göre [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationYWorld", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü y ekseninde dünya koordinatlarına göre [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
+        {opcode:"changeRotationZWorld", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü z ekseninde dünya koordinatlarına göre [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
         {opcode:"setScale", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğini x [X] y [Y] z [Z] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:100},Y:{type:N,defaultValue:100},Z:{type:N,defaultValue:100}}},
-        {opcode:"setScaleX", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğinin x bileşenini [VALUE] yap", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
-        {opcode:"setScaleY", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğinin y bileşenini [VALUE] yap", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
-        {opcode:"setScaleZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğinin z bileşenini [VALUE] yap", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
-        {opcode:"changeScaleX", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğinin x bileşenini [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
-        {opcode:"changeScaleY", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğinin y bileşenini [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
-        {opcode:"changeScaleZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğinin z bileşenini [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"setScaleX", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğini x [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
+        {opcode:"setScaleY", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğini y [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
+        {opcode:"setScaleZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğini z [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:100}}},
+        {opcode:"changeScaleX", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğini x ekseninde [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"changeScaleY", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğini y ekseninde [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"changeScaleZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] ölçeğini z ekseninde [VALUE] kadar değiştir", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:10}}},
         {opcode:"moveSteps", blockType:BlockType.COMMAND, text:"Nesne [NAME] öğesini [STEPS] adım hareket ettir", arguments:{NAME:{type:S,defaultValue:"box"},STEPS:{type:N,defaultValue:10}}},
-        {opcode:"moveToward", blockType:BlockType.COMMAND, text:"Nesne [NAME] öğesini x [X] y [Y] z [Z] yönüne doğru [STEPS] adım hareket ettir", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0},STEPS:{type:N,defaultValue:10}}},
-        {opcode:"pointObject", blockType:BlockType.COMMAND, text:"Nesne [NAME]'i nesne [TARGET]'a doğru yönlendir", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
-        {opcode:"pointXYZ", blockType:BlockType.COMMAND, text:"Nesne [NAME]'i x [X] y [Y] z [Z] konumuna yönlendir", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
-        {opcode:"glide", blockType:BlockType.COMMAND, text:"Nesne [NAME]'i [SECONDS] saniyede x [X] y [Y] z [Z] konumuna kaydır", arguments:{NAME:{type:S,defaultValue:"box"},SECONDS:{type:N,defaultValue:1},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
+        {opcode:"moveToward", blockType:BlockType.COMMAND, text:"Nesne [NAME]'yi x [X] y [Y] z [Z] yönüne [STEPS] adım hareket ettir", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0},STEPS:{type:N,defaultValue:10}}},
+        {opcode:"pointObject", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü [TARGET] nesnesine çevir", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
+        {opcode:"pointXYZ", blockType:BlockType.COMMAND, text:"Nesne [NAME] yönünü x [X] y [Y] z [Z] noktasına çevir", arguments:{NAME:{type:S,defaultValue:"box"},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
+        {opcode:"glide", blockType:BlockType.COMMAND, text:"Nesne [NAME]'yi [SECONDS] saniyede x [X] y [Y] z [Z] konumuna kaydır", arguments:{NAME:{type:S,defaultValue:"box"},SECONDS:{type:N,defaultValue:1},X:{type:N,defaultValue:0},Y:{type:N,defaultValue:0},Z:{type:N,defaultValue:0}}},
         "---",
-        {opcode:"useCamera", blockType:BlockType.COMMAND, text:"Nesne [NAME]'i kamera olarak kullan", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"useCamera", blockType:BlockType.COMMAND, text:"Nesne [NAME]'yi kamera olarak kullan", arguments:{NAME:{type:S,defaultValue:"box"}}},
         {opcode:"setColor", blockType:BlockType.COMMAND, text:"Nesne [NAME] rengini [COLOR] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},COLOR:{type:C,defaultValue:"#ffffff"}}},
         {opcode:"setOpacity", blockType:BlockType.COMMAND, text:"Nesne [NAME] saydamlığını [VALUE] % yap", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:0}}},
-        {opcode:"setPassThrough", blockType:BlockType.COMMAND, text:"Nesne [NAME] için geçirgenliği [STATE] yap", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
-        {opcode:"setPhysics", blockType:BlockType.COMMAND, text:"Nesne [NAME] için fizik [STATE] yap", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
-        {opcode:"bounce", blockType:BlockType.COMMAND, text:"Nesne [NAME] başka bir nesneye değerse zıplasın", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"isTouching", blockType:BlockType.BOOLEAN, text:"Nesne [NAME] nesne [TARGET] ile temas ediyor mu?", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
+        {opcode:"setPassThrough", blockType:BlockType.COMMAND, text:"Nesne [NAME] geçiş durumunu [STATE] yap", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
+        {opcode:"setPhysics", blockType:BlockType.COMMAND, text:"Nesne [NAME] fizik özelliğini [STATE] yap", arguments:{NAME:{type:S,defaultValue:"box"},STATE:{type:S,menu:"onoff"}}},
+        {opcode:"bounce", blockType:BlockType.COMMAND, text:"Eğer Nesne [NAME] başka bir nesneye dokunursa zıpla", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"isTouching", blockType:BlockType.BOOLEAN, text:"Nesne [NAME] diğer nesne [TARGET] ile temas ediyor mu", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}},
         "---",
         {opcode:"start", blockType:BlockType.COMMAND, text:"Çizimi başlat"},
         {opcode:"stop", blockType:BlockType.COMMAND, text:"Çizimi durdur"},
-        {opcode:"isDrawing", blockType:BlockType.BOOLEAN, text:"Şu anda çiziliyor mu?"},
-        {opcode:"setFogDistance", blockType:BlockType.COMMAND, text:"Sis mesafesini [VALUE] olarak ayarla", arguments:{VALUE:{type:N,defaultValue:100}}},
-        {opcode:"setFogColor", blockType:BlockType.COMMAND, text:"Sis rengini [COLOR] olarak ayarla", arguments:{COLOR:{type:C,defaultValue:"#ffffff"}}},
+        {opcode:"isDrawing", blockType:BlockType.BOOLEAN, text:"Şu an çiziliyor mu?"},
+        {opcode:"setFogDistance", blockType:BlockType.COMMAND, text:"Sis mesafesini [VALUE] yap", arguments:{VALUE:{type:N,defaultValue:100}}},
+        {opcode:"setFogColor", blockType:BlockType.COMMAND, text:"Sis rengini [COLOR] yap", arguments:{COLOR:{type:C,defaultValue:"#ffffff"}}},
         {opcode:"setFog", blockType:BlockType.COMMAND, text:"Sisi [STATE] yap", arguments:{STATE:{type:S,menu:"onoff"}}},
         "---",
-        {opcode:"setLight", blockType:BlockType.COMMAND, text:"Nesne [NAME]'i ışık kaynağı yap [STATE]", arguments:{NAME:{type:S,defaultValue:"light"},STATE:{type:S,menu:"onoff"}}},
-        {opcode:"setLightIntensity", blockType:BlockType.COMMAND, text:"Nesne [NAME] ışık şiddetini [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"light"},VALUE:{type:N,defaultValue:10}}},
+        {opcode:"setLight", blockType:BlockType.COMMAND, text:"Nesne [NAME]'yi ışık kaynağı yap [STATE]", arguments:{NAME:{type:S,defaultValue:"light"},STATE:{type:S,menu:"onoff"}}},
+        {opcode:"setLightIntensity", blockType:BlockType.COMMAND, text:"Nesne [NAME] ışık gücünü [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"light"},VALUE:{type:N,defaultValue:10}}},
         {opcode:"setLightColor", blockType:BlockType.COMMAND, text:"Nesne [NAME] ışık rengini [COLOR] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"light"},COLOR:{type:C,defaultValue:"#ffffff"}}},
         {opcode:"setReflectivity", blockType:BlockType.COMMAND, text:"Nesne [NAME] yansıtıcılığını [VALUE] olarak ayarla", arguments:{NAME:{type:S,defaultValue:"box"},VALUE:{type:N,defaultValue:1}}},
-        {opcode:"setRTXShadows", blockType:BlockType.COMMAND, text:"RTX gölgelerini [STATE] yap", arguments:{STATE:{type:S,menu:"onoff"}}},
+        {opcode:"setRTXShadows", blockType:BlockType.COMMAND, text:"Gelişmiş gölge (RTX) ayarını [STATE] yap", arguments:{STATE:{type:S,menu:"onoff"}}},
         "---",
-        {opcode:"getPositionX", blockType:BlockType.REPORTER, text:"Nesne [NAME] konumu x", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getPositionY", blockType:BlockType.REPORTER, text:"Nesne [NAME] konumu y", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getPositionZ", blockType:BlockType.REPORTER, text:"Nesne [NAME] konumu z", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getRotationX", blockType:BlockType.REPORTER, text:"Nesne [NAME] dönüşü x", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getRotationY", blockType:BlockType.REPORTER, text:"Nesne [NAME] dönüşü y", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getRotationZ", blockType:BlockType.REPORTER, text:"Nesne [NAME] dönüşü z", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getScaleX", blockType:BlockType.REPORTER, text:"Nesne [NAME] ölçeği x", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getScaleY", blockType:BlockType.REPORTER, text:"Nesne [NAME] ölçeği y", arguments:{NAME:{type:S,defaultValue:"box"}}},
-        {opcode:"getScaleZ", blockType:BlockType.REPORTER, text:"Nesne [NAME] ölçeği z", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getPositionX", blockType:BlockType.REPORTER, text:"Nesne [NAME] x konumu", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getPositionY", blockType:BlockType.REPORTER, text:"Nesne [NAME] y konumu", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getPositionZ", blockType:BlockType.REPORTER, text:"Nesne [NAME] z konumu", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getRotationX", blockType:BlockType.REPORTER, text:"Nesne [NAME] x yönü", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getRotationY", blockType:BlockType.REPORTER, text:"Nesne [NAME] y yönü", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getRotationZ", blockType:BlockType.REPORTER, text:"Nesne [NAME] z yönü", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getScaleX", blockType:BlockType.REPORTER, text:"Nesne [NAME] x ölçeği", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getScaleY", blockType:BlockType.REPORTER, text:"Nesne [NAME] y ölçeği", arguments:{NAME:{type:S,defaultValue:"box"}}},
+        {opcode:"getScaleZ", blockType:BlockType.REPORTER, text:"Nesne [NAME] z ölçeği", arguments:{NAME:{type:S,defaultValue:"box"}}},
         {opcode:"distance", blockType:BlockType.REPORTER, text:"Nesne [NAME] ile [TARGET] arasındaki mesafe", arguments:{NAME:{type:S,defaultValue:"box"},TARGET:{type:S,defaultValue:"target"}}}
       ], menus:{axis:{acceptReporters:true,items:["x","y","z"]},onoff}};
     }
@@ -344,13 +369,13 @@
     setRotationX(a){const o=object(a.NAME);if(o)o.rotation.x=THREE.MathUtils.degToRad(num(a.VALUE));}
     setRotationY(a){const o=object(a.NAME);if(o)o.rotation.y=THREE.MathUtils.degToRad(num(a.VALUE));}
     setRotationZ(a){const o=object(a.NAME);if(o)o.rotation.z=THREE.MathUtils.degToRad(num(a.VALUE));}
-    // [FIX v1.2.1] Yerel eksen dönüşü: nesnenin yönelimine göre döndürme
-    //   Önce: o.rotation.x += deg (dünya ekseni Euler dönüşü → nesnenin yönüyle ilişkili değil)
-    //   Sonra: quaternion.multiply(deltaQuat yerel eksende) → nesnenin yerel ekseninde döndürme
+    // [FIX v1.2.1] ローカル軸回転: オブジェクトの向き基準で回転する
+    //   Before: o.rotation.x += deg (ワールド軸の Euler 回転 → オブジェクトが向いてる方向と無関係)
+    //   After:  quaternion.multiply(deltaQuat on local axis) → オブジェクトのローカル軸で回転
     changeRotationX(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisX,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.multiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationY(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisY,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.multiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationZ(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisZ,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.multiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
-    // Dünya ekseni dönüşü (nesnenin yönelimine bağlı değil)
+    // ワールド軸回転（オブジェクト自身の向きに影響されない）
     changeRotationXWorld(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisX,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.premultiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationYWorld(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisY,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.premultiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
     changeRotationZWorld(a){const o=object(a.NAME);if(o){_deltaQuat.setFromAxisAngle(_localAxisZ,THREE.MathUtils.degToRad(num(a.VALUE)));o.quaternion.premultiply(_deltaQuat);o.rotation.setFromQuaternion(o.quaternion);}}
@@ -397,7 +422,10 @@
 
     async textureCostume(a,util){const o=object(a.NAME);if(!o)return;const costume=util.target.sprite.costumes.find(c=>c.name===name(a.COSTUME));if(!costume||!costume.asset)return;const texture=await new THREE.TextureLoader().loadAsync(costume.asset.encodeDataURI());texture.colorSpace=THREE.SRGBColorSpace;setMaterial(o,m=>{m.map=texture;m.transparent=true;m.depthWrite=false;m.needsUpdate=true;});}
     async textureURL(a){const o=object(a.NAME);if(!o)return;const url=name(a.URL);if(!await Scratch.canFetch(url))return;const response=await Scratch.fetch(url);const blob=await response.blob();const local=URL.createObjectURL(blob);try{const texture=await new THREE.TextureLoader().loadAsync(local);texture.colorSpace=THREE.SRGBColorSpace;setMaterial(o,m=>{m.map=texture;m.transparent=true;m.depthWrite=false;m.needsUpdate=true;});}finally{URL.revokeObjectURL(local);}}
-    async modelList(a,util){const n=name(a.NAME),items=listValue(a.LIST,util);if(!objects.has(n)||!items.length)return;let root;if(items.every(v=>Number.isFinite(Number(v))&&Number(v)>=0&&Number(v)<=255)){const bytes=new Uint8Array(items.map(Number));const gltf=await new Promise((resolve,reject)=>new GLTFLoader().parse(bytes.buffer,"",resolve,reject));root=gltf.scene;}else{const text=items.join("\n").trim();if(text.startsWith("{")||text.startsWith("[")){const gltf=await new Promise((resolve,reject)=>new GLTFLoader().parse(text,"",resolve,reject));root=gltf.scene;}else root=new OBJLoader().parse(text);}replaceObject(n,root);}
+    modelOBJList(a,util){const n=name(a.NAME),items=listValue(a.LIST,util);if(!objects.has(n)||!items.length)return;replaceObject(n,new OBJLoader().parse(items.join("\n")));}
+    async modelGLTFList(a,util){const n=name(a.NAME),items=listValue(a.LIST,util);if(!objects.has(n)||!items.length)return;replaceObject(n,await loadGLTFList(items));}
+    playAnimation(a){playObjectAnimation(object(a.NAME),a.ANIMATION);}
+    playAnimationUntilDone(a,util){const o=object(a.NAME);if(!o)return;if(!util.stackFrame.action){const action=playObjectAnimation(o,a.ANIMATION);if(!action)return;util.stackFrame.action=action;}if(util.stackFrame.action.isRunning())util.yield();}
   }
 
   runtime.on("PROJECT_STOP_ALL", () => { drawing = false; clearSkin(); });
